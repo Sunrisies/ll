@@ -1,6 +1,5 @@
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
-use rayon::iter::Either;
 use rayon::prelude::*;
 use std::fs;
 use std::path::Path;
@@ -15,7 +14,12 @@ struct FileEntry {
 }
 
 #[derive(Parser, Debug)]
-#[command(version, author, about, long_about = None)]
+#[command(
+    version,
+    author,
+    about = "一个类似 ls 的命令行目录列表工具",
+    long_about = "用法示例:\n  ll -l 查看详细列表\n  ll -a 显示隐藏文件"
+)]
 struct Cli {
     /// 指定要列出的文件或目录
     #[arg(default_value = ".", value_name = "FILE")]
@@ -26,7 +30,11 @@ struct Cli {
     long_format: bool,
 
     /// 启用人类可读的文件大小
-    #[arg(short = 'h', long = "human-readable", help = "打印 如1K、234M、2G等。")]
+    #[arg(
+        short = 'H',
+        long = "human-readable",
+        help = "使用易读的文件大小格式 (例如 1K, 234M, 2G)"
+    )] // 修改短选项为 -H
     human_readable: bool,
 
     /// 显示隐藏文件
