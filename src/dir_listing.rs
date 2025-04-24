@@ -122,6 +122,9 @@ pub fn list_directory(path: &Path, args: &Cli) {
         for entry in &entries {
             sum_size += entry.size_raw; // 使用第4个字段的原始大小
         }
+        if args.sort {
+            entries.sort_by(|a, b| a.size_raw.cmp(&b.size_raw));
+        }
 
         let mut table = Table::new();
         table

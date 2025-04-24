@@ -35,6 +35,9 @@ pub struct Cli {
     /// 启用并行处理加速扫描
     #[arg(short = 'f', long = "fast")]
     pub parallel: bool,
+
+    #[arg(short = 's', long = "sort")]
+    pub sort: bool,
 }
 
 pub struct FileEntry {
