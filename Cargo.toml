@@ -9,6 +9,7 @@ repository = "https://github.com/Sunrisies/ll"
 [dependencies]
 chrono = "0.4.40"
 clap = { version = "4.5.37", features = ["derive"] }
+comfy-table = "7.1.4"
 indicatif = "0.17.11"
 rayon = "1.10.0"
 

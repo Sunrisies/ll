@@ -1,5 +1,6 @@
 use super::models::{Cli, FileEntry};
 use super::utils::{human_readable_size, progress_bar_init};
+use comfy_table::{Cell, ContentArrangement, Table};
 use indicatif::ProgressBar;
 use rayon::prelude::*;
 use std::fs;
@@ -121,19 +122,37 @@ pub fn list_directory(path: &Path, args: &Cli) {
         for entry in &entries {
             sum_size += entry.size_raw; // 使用第4个字段的原始大小
         }
-        // 在打印循环前添加
-        println!("{:<5} {:<10} {:<10} {:<20}", "类型", "权限", "大小", "路径");
+
+        let mut table = Table::new();
+        table
+            .set_content_arrangement(ContentArrangement::Dynamic)
+            .set_header(vec![
+                Cell::new("类型").add_attribute(comfy_table::Attribute::Bold),
+                Cell::new("权限").add_attribute(comfy_table::Attribute::Bold),
+                Cell::new("大小").add_attribute(comfy_table::Attribute::Bold),
+                Cell::new("路径").add_attribute(comfy_table::Attribute::Bold),
+            ])
+            .load_preset(comfy_table::presets::UTF8_FULL)
+            .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+
         for entry in entries.iter() {
-            println!(
-                "{:<5} {:<10} {:<10} {:<20}",
-                entry.file_type, entry.permissions, entry.size_display, entry.path
-            );
+            table.add_row(vec![
+                Cell::new(&entry.file_type.to_string())
+                    .set_alignment(comfy_table::CellAlignment::Center),
+                Cell::new(entry.permissions.replace('-', "")),
+                Cell::new(&entry.size_display),
+                Cell::new(entry.path.split('/').last().unwrap_or(&entry.path)),
+            ]);
         }
+
+        println!("{}", table);
+        println!("┌{:─^33}┐", "");
         println!(
-            "\n总数量: {} 个条目 | 总大小: {}",
+            "│ 总数量: {:6} │ 总大小: {:10} ",
             entries.len(),
             human_readable_size(sum_size)
         );
+        println!("└{:─^33}┘", "");
     } else {
         for file in files {
             println!("{}", file);
