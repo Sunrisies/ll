@@ -22,9 +22,14 @@ struct Cli {
     /// 显示隐藏文件
     #[arg(short = 'a', long = "all", help = "不要忽略以开头的条目 .")]
     all: bool,
+
+    /// 显示程序运行时间
+    #[arg(short = 't', long = "time")]
+    show_time: bool,
 }
 
 fn main() {
+    let start_time = std::time::Instant::now();
     let args = Cli::parse();
     let path = Path::new(&args.file);
 
@@ -32,6 +37,11 @@ fn main() {
         list_directory(path, &args);
     } else {
         println!("{}", path.display());
+    }
+
+    if args.show_time {
+        let duration = start_time.elapsed();
+        println!("\n运行时间: {:.3}秒", duration.as_secs_f64());
     }
 }
 
@@ -89,11 +99,19 @@ fn list_directory(path: &Path, args: &Cli) {
                     "x"
                 ),
                 if metadata.is_dir() {
-                    calculate_dir_size(&file_path, args.human_readable, &process_pb)
+                    let (raw, converted) =
+                        calculate_dir_size(&file_path, args.human_readable, &process_pb);
+                    converted // 转换后的可读格式
                 } else if args.human_readable {
                     human_readable_size(metadata.len())
                 } else {
                     metadata.len().to_string()
+                },
+                // 新增原始大小字段（目录用raw，文件用metadata.len()）
+                if metadata.is_dir() {
+                    calculate_dir_size(&file_path, false, &process_pb).0
+                } else {
+                    metadata.len()
                 },
                 file_path.display().to_string(),
             ));
@@ -102,21 +120,18 @@ fn list_directory(path: &Path, args: &Cli) {
         process_pb.finish_and_clear();
         let sum = entries.clone();
         let mut sum_size = 0;
-        // 统一打印结果
-        for entry in entries {
-            if entry.0 == "d" {
-                sum_size += entry.2.parse::<u64>().unwrap_or(0);
-                println!(
-                    "{}{} {:>8} {}----------{}",
-                    entry.0, entry.1, entry.2, entry.3, entry.2
-                );
-            }
-
-            println!("{}{} {:>8} {}", entry.0, entry.1, entry.2, entry.3);
+        for entry in &entries {
+            sum_size += entry.3; // 使用第4个字段的原始大小
         }
-
-        // 新增总数统计
-        println!("\n总数量: {} 个条目, 总大小: {}", sum.len(), sum_size);
+        // 打印条目信息
+        for (i, entry) in entries.iter().enumerate() {
+            println!("{:>5} {:>10} {:>10} {}", entry.0, entry.1, entry.2, entry.4);
+        }
+        println!(
+            "\n总数量: {} 个条目 | 总大小: {}",
+            entries.len(),
+            human_readable_size(sum_size)
+        );
     } else {
         for file in files {
             println!("{}", file);
@@ -146,7 +161,7 @@ fn human_readable_size(bytes: u64) -> String {
     format!("{:.1}{}", size, units[unit])
 }
 
-fn calculate_dir_size(path: &Path, human_readable: bool, main_pb: &ProgressBar) -> String {
+fn calculate_dir_size(path: &Path, human_readable: bool, main_pb: &ProgressBar) -> (u64, String) {
     fn inner_calculate(p: &Path, pb: &ProgressBar) -> u64 {
         fs::read_dir(p)
             .map(|entries| {
@@ -175,11 +190,12 @@ fn calculate_dir_size(path: &Path, human_readable: bool, main_pb: &ProgressBar) 
     let total = inner_calculate(path, main_pb);
     main_pb.set_message("处理中...");
 
-    if human_readable {
+    let converted = if human_readable {
         human_readable_size(total)
     } else {
         total.to_string()
-    }
+    };
+    (total, converted)
 }
 
 // 引入 ProgressBar 类型，假设它来自 indicatif 库
