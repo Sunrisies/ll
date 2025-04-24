@@ -1,8 +1,17 @@
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 use std::fs;
 use std::path::Path;
 use std::result::Result;
+
+struct FileEntry {
+    file_type: char,
+    permissions: String,
+    size_display: String,
+    size_raw: u64,
+    path: String,
+}
 
 #[derive(Parser, Debug)]
 #[command(version, author, about, long_about = None)]
@@ -71,9 +80,6 @@ fn list_directory(path: &Path, args: &Cli) {
         process_pb.set_message("处理中..."); // 设置固定提示信息
 
         for (i, file) in files.iter().enumerate() {
-            // process_pb.set_message(format!("处理 {}", file));
-
-            // 在文件处理循环结束后保留进度条不清理
             // process_pb.finish_and_clear(); // 注释此行
             process_pb.tick();
             let file_path = path.join(&file);
@@ -84,11 +90,18 @@ fn list_directory(path: &Path, args: &Cli) {
                     continue;
                 }
             };
-
-            // 收集条目信息
-            entries.push((
-                if metadata.is_dir() { "d" } else { "-" },
-                format!(
+            let (size_display, size_raw) = if metadata.is_dir() {
+                let (raw, converted) =
+                    calculate_dir_size(&file_path, args.human_readable, &process_pb);
+                (converted, raw)
+            } else if args.human_readable {
+                (human_readable_size(metadata.len()), metadata.len())
+            } else {
+                (metadata.len().to_string(), metadata.len())
+            };
+            entries.push(FileEntry {
+                file_type: if metadata.is_dir() { 'd' } else { '-' },
+                permissions: format!(
                     "{}-{}-{}",
                     if metadata.permissions().readonly() {
                         "r"
@@ -98,34 +111,24 @@ fn list_directory(path: &Path, args: &Cli) {
                     "w",
                     "x"
                 ),
-                if metadata.is_dir() {
-                    let (raw, converted) =
-                        calculate_dir_size(&file_path, args.human_readable, &process_pb);
-                    converted // 转换后的可读格式
-                } else if args.human_readable {
-                    human_readable_size(metadata.len())
-                } else {
-                    metadata.len().to_string()
-                },
-                // 新增原始大小字段（目录用raw，文件用metadata.len()）
-                if metadata.is_dir() {
-                    calculate_dir_size(&file_path, false, &process_pb).0
-                } else {
-                    metadata.len()
-                },
-                file_path.display().to_string(),
-            ));
+                size_display,
+                size_raw,
+                path: file_path.display().to_string(),
+            });
         }
 
         process_pb.finish_and_clear();
-        let sum = entries.clone();
         let mut sum_size = 0;
         for entry in &entries {
-            sum_size += entry.3; // 使用第4个字段的原始大小
+            sum_size += entry.size_raw; // 使用第4个字段的原始大小
         }
-        // 打印条目信息
-        for (i, entry) in entries.iter().enumerate() {
-            println!("{:>5} {:>10} {:>10} {}", entry.0, entry.1, entry.2, entry.4);
+        // 在打印循环前添加
+        println!("{:<5} {:<10} {:<10} {:<20}", "类型", "权限", "大小", "路径");
+        for entry in entries.iter() {
+            println!(
+                "{:<5} {:<10} {:<10} {:<20}",
+                entry.file_type, entry.permissions, entry.size_display, entry.path
+            );
         }
         println!(
             "\n总数量: {} 个条目 | 总大小: {}",
@@ -166,6 +169,7 @@ fn calculate_dir_size(path: &Path, human_readable: bool, main_pb: &ProgressBar) 
         fs::read_dir(p)
             .map(|entries| {
                 entries
+                    .par_bridge()
                     .filter_map(|e| {
                         pb.tick();
                         e.ok()
