@@ -1,5 +1,6 @@
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
+use rayon::iter::Either;
 use rayon::prelude::*;
 use std::fs;
 use std::path::Path;
@@ -35,6 +36,10 @@ struct Cli {
     /// 显示程序运行时间
     #[arg(short = 't', long = "time")]
     show_time: bool,
+
+    /// 启用并行处理加速扫描
+    #[arg(short = 'f', long = "fast")]
+    parallel: bool,
 }
 
 fn main() {
@@ -92,7 +97,7 @@ fn list_directory(path: &Path, args: &Cli) {
             };
             let (size_display, size_raw) = if metadata.is_dir() {
                 let (raw, converted) =
-                    calculate_dir_size(&file_path, args.human_readable, &process_pb);
+                    calculate_dir_size(&file_path, args.human_readable, &process_pb, args.parallel);
                 (converted, raw)
             } else if args.human_readable {
                 (human_readable_size(metadata.len()), metadata.len())
@@ -164,34 +169,45 @@ fn human_readable_size(bytes: u64) -> String {
     format!("{:.1}{}", size, units[unit])
 }
 
-fn calculate_dir_size(path: &Path, human_readable: bool, main_pb: &ProgressBar) -> (u64, String) {
-    fn inner_calculate(p: &Path, pb: &ProgressBar) -> u64 {
+fn calculate_dir_size(
+    path: &Path,
+    human_readable: bool,
+    main_pb: &ProgressBar,
+    parallel: bool,
+) -> (u64, String) {
+    fn inner_calculate(p: &Path, pb: &ProgressBar, parallel: bool) -> u64 {
         fs::read_dir(p)
             .map(|entries| {
-                entries
-                    .par_bridge()
-                    .filter_map(|e| {
-                        pb.tick();
-                        e.ok()
-                    })
-                    .map(|e| {
-                        let md = match e.metadata() {
-                            Ok(metadata) => metadata,
-                            Err(_) => return 0,
-                        };
-                        if md.is_dir() {
-                            inner_calculate(&e.path(), pb)
-                        } else {
-                            md.len()
-                        }
-                    })
-                    .sum()
+                let base_iter = entries.filter_map(|e| {
+                    pb.tick();
+                    e.ok()
+                });
+                if parallel {
+                    let processed_iter = base_iter.par_bridge();
+                    processed_iter.map(|e| process_entry(e, pb, parallel)).sum()
+                } else {
+                    base_iter.map(|e| process_entry(e, pb, parallel)).sum()
+                }
+                // 统一使用并行迭代器接口
             })
             .unwrap_or(0)
     }
 
+    // 新增辅助函数处理条目
+    fn process_entry(e: std::fs::DirEntry, pb: &ProgressBar, parallel: bool) -> u64 {
+        let md = match e.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => return 0,
+        };
+        if md.is_dir() {
+            inner_calculate(&e.path(), pb, parallel)
+        } else {
+            md.len()
+        }
+    }
+
     main_pb.set_message(format!("计算 {}...", path.display()));
-    let total = inner_calculate(path, main_pb);
+    let total = inner_calculate(path, main_pb, parallel);
     main_pb.set_message("处理中...");
 
     let converted = if human_readable {
