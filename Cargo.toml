@@ -2,7 +2,10 @@
 name = "ll"
 version = "0.1.0"
 edition = "2021"
-
+authors = ["朝阳 3266420686@qq.com"]
+description = "高性能目录列表工具"
+license = "MIT"
+repository = "https://github.com/Sunrisies/ll"
 [dependencies]
 chrono = "0.4.40"
 clap = { version = "4.5.37", features = ["derive"] }
