@@ -150,7 +150,17 @@ pub fn list_directory(path: &Path, args: &Cli) {
                 ),
                 size_display,
                 size_raw,
-                path: file_path.display().to_string(),
+                path: match file_path.canonicalize() {
+                    Ok(canonical_path) => {
+                        let path_str = canonical_path.to_string_lossy().into_owned();
+                        let path_str = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
+                        path_str.to_string()
+                    }
+                    Err(e) => {
+                        eprintln!("获取绝对路径失败: {}", e);
+                        "".to_string()
+                    }
+                },
             });
         }
 
@@ -222,7 +232,6 @@ fn calculate_dir_size1(
     };
     for entry in sub_entries.flatten() {
         let file_name = entry.file_name().to_string_lossy().to_string();
-        // println!("目录下的文件: {}", file_name);
         let metadata = match entry.metadata() {
             Ok(m) => m,
             Err(e) => {
@@ -232,16 +241,12 @@ fn calculate_dir_size1(
         };
         if metadata.is_dir() {
             let file_path = sub_path.join(&file_name);
-
-            // println!("目录: {}", file_name);
             // 如果是目录，是否跟要搜索的名称匹配
             if !file_name.contains(name) {
                 calculate_dir_size1(file_path, human_readable, pb, main_pb, &name, entries);
-                // println!("不匹配: {}", file_name);
                 continue; // 如果不匹配则跳过
             } else {
                 let (raw, converted) = calculate_dir_size(&file_path, human_readable, pb, main_pb);
-                println!("目录1111: {} 大小: {},{}", file_name, converted, raw);
                 entries.push(FileEntry {
                     file_type: if metadata.is_dir() { 'd' } else { '-' },
                     permissions: format!(
@@ -256,12 +261,21 @@ fn calculate_dir_size1(
                     ),
                     size_display: converted,
                     size_raw: raw,
-                    path: file_path.display().to_string(),
+                    path: match file_path.canonicalize() {
+                        Ok(canonical_path) => {
+                            let path_str = canonical_path.to_string_lossy().into_owned();
+                            let path_str = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
+                            path_str.to_string()
+                        }
+                        Err(e) => {
+                            eprintln!("获取绝对路径失败: {}", e);
+                            "".to_string()
+                        }
+                    },
                 });
             }
         } else {
             continue;
         }
-        // files.push(file_name);
     }
 }
