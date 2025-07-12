@@ -5,6 +5,7 @@ use indicatif::ProgressBar;
 use rayon::prelude::*;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 
 pub fn calculate_dir_size(
     path: &Path,
@@ -55,6 +56,7 @@ pub fn calculate_dir_size(
     (total, converted)
 }
 pub fn list_directory(path: &Path, args: &Cli) {
+    println!("args: {:?}", args);
     let entries = match fs::read_dir(path) {
         Ok(entries) => entries,
         Err(e) => {
@@ -62,7 +64,6 @@ pub fn list_directory(path: &Path, args: &Cli) {
             return;
         }
     };
-
     let mut files: Vec<String> = Vec::new();
 
     for entry in entries.flatten() {
@@ -79,10 +80,37 @@ pub fn list_directory(path: &Path, args: &Cli) {
         let process_pb = progress_bar_init(None).unwrap(); // 修改为不传入具体数值
         process_pb.set_message("处理中..."); // 设置固定提示信息
 
-        for (i, file) in files.iter().enumerate() {
+        for (_i, file) in files.iter().enumerate() {
             // process_pb.finish_and_clear(); // 注释此行
             process_pb.tick();
             let file_path = path.join(&file);
+            if args.name.is_some() {
+                let metadata = match file_path.metadata() {
+                    Ok(m) => m,
+                    Err(e) => {
+                        eprintln!("ls: cannot access '{}': {}", file_path.display(), e);
+                        continue;
+                    }
+                };
+                if metadata.is_dir() {
+                    // 如果是目录，是否跟要搜索的名称匹配
+                    if let Some(name) = &args.name {
+                        if !file.contains(name) {
+                            calculate_dir_size1(
+                                file_path,
+                                args.human_readable,
+                                &process_pb,
+                                args.parallel,
+                                &name,
+                                &mut entries,
+                            );
+                            continue;
+                        }
+                    }
+                } else {
+                    continue;
+                }
+            }
             let metadata = match file_path.metadata() {
                 Ok(m) => m,
                 Err(e) => {
@@ -99,6 +127,15 @@ pub fn list_directory(path: &Path, args: &Cli) {
             } else {
                 (metadata.len().to_string(), metadata.len())
             };
+            println!(
+                "212112211212--{}",
+                file_path
+                    .canonicalize()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            );
+
             entries.push(FileEntry {
                 file_type: if metadata.is_dir() { 'd' } else { '-' },
                 permissions: format!(
@@ -162,4 +199,69 @@ pub fn list_directory(path: &Path, args: &Cli) {
         }
     }
     scan_pb.finish_and_clear(); // 完成后清理进度条
+}
+
+// 需要重写一个函数，是实现传入一个目录，传入一个名称，返回这个目录下面的对应名称文件大小
+fn calculate_dir_size1(
+    file_path: PathBuf,
+    human_readable: bool,
+    pb: &ProgressBar,
+    main_pb: bool,
+    name: &str,
+    entries: &mut Vec<FileEntry>,
+) {
+    let sub_path_str = file_path.display().to_string();
+    let sub_path = Path::new(&sub_path_str);
+    // 怎么进入到这个目录下面
+    let sub_entries = match fs::read_dir(sub_path) {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!("ls: cannot access '{}': {}", sub_path.display(), e);
+            return;
+        }
+    };
+    for entry in sub_entries.flatten() {
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        // println!("目录下的文件: {}", file_name);
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("ls: cannot access '{}': {}", sub_path.display(), e);
+                continue;
+            }
+        };
+        if metadata.is_dir() {
+            let file_path = sub_path.join(&file_name);
+
+            // println!("目录: {}", file_name);
+            // 如果是目录，是否跟要搜索的名称匹配
+            if !file_name.contains(name) {
+                calculate_dir_size1(file_path, human_readable, pb, main_pb, &name, entries);
+                // println!("不匹配: {}", file_name);
+                continue; // 如果不匹配则跳过
+            } else {
+                let (raw, converted) = calculate_dir_size(&file_path, human_readable, pb, main_pb);
+                println!("目录1111: {} 大小: {},{}", file_name, converted, raw);
+                entries.push(FileEntry {
+                    file_type: if metadata.is_dir() { 'd' } else { '-' },
+                    permissions: format!(
+                        "{}-{}-{}",
+                        if metadata.permissions().readonly() {
+                            "r"
+                        } else {
+                            " "
+                        },
+                        "w",
+                        "x"
+                    ),
+                    size_display: converted,
+                    size_raw: raw,
+                    path: file_path.display().to_string(),
+                });
+            }
+        } else {
+            continue;
+        }
+        // files.push(file_name);
+    }
 }

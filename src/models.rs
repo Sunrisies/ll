@@ -38,6 +38,10 @@ pub struct Cli {
 
     #[arg(short = 's', long = "sort")]
     pub sort: bool,
+
+    /// 搜索文件名或目录名
+    #[arg(long = "name", value_name = "PATTERN")]
+    pub name: Option<String>,
 }
 
 pub struct FileEntry {
