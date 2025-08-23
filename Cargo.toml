@@ -13,3 +13,10 @@ comfy-table = "7.1.4"
 indicatif = "0.17.11"
 rayon = "1.10.0"
 
+
+[profile.release]
+lto = true
+strip = true
+panic = "abort"
+codegen-units = 1
+opt-level = "z"   # 优化大小而非速度

@@ -127,15 +127,6 @@ pub fn list_directory(path: &Path, args: &Cli) {
             } else {
                 (metadata.len().to_string(), metadata.len())
             };
-            println!(
-                "212112211212--{}",
-                file_path
-                    .canonicalize()
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned()
-            );
-
             entries.push(FileEntry {
                 file_type: if metadata.is_dir() { 'd' } else { '-' },
                 permissions: format!(

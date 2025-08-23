@@ -36,6 +36,7 @@ pub struct Cli {
     #[arg(short = 'f', long = "fast")]
     pub parallel: bool,
 
+    /// 按文件大小排序
     #[arg(short = 's', long = "sort")]
     pub sort: bool,
 
