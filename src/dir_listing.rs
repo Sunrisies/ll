@@ -4,8 +4,7 @@ use comfy_table::{Cell, ContentArrangement, Table};
 use indicatif::ProgressBar;
 use rayon::prelude::*;
 use std::fs;
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
 pub fn calculate_dir_size(
     path: &Path,
@@ -56,7 +55,6 @@ pub fn calculate_dir_size(
     (total, converted)
 }
 pub fn list_directory(path: &Path, args: &Cli) {
-    println!("args: {:?}", args);
     let entries = match fs::read_dir(path) {
         Ok(entries) => entries,
         Err(e) => {
@@ -81,7 +79,6 @@ pub fn list_directory(path: &Path, args: &Cli) {
         process_pb.set_message("处理中..."); // 设置固定提示信息
 
         for (_i, file) in files.iter().enumerate() {
-            // process_pb.finish_and_clear(); // 注释此行
             process_pb.tick();
             let file_path = path.join(&file);
             if args.name.is_some() {
@@ -147,9 +144,9 @@ pub fn list_directory(path: &Path, args: &Cli) {
                         let path_str = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
                         path_str.to_string()
                     }
-                    Err(e) => {
-                        eprintln!("获取绝对路径失败: {}", e);
-                        "".to_string()
+                    Err(_e) => {
+                        // eprintln!("获取绝对路径失败: {}", e);
+                        file_path.to_string_lossy().into_owned()
                     }
                 },
             });
@@ -177,12 +174,21 @@ pub fn list_directory(path: &Path, args: &Cli) {
             .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
 
         for entry in entries.iter() {
+            let file_path = if args.full_path {
+                &entry.path
+            } else {
+                entry
+                    .path
+                    .split(MAIN_SEPARATOR)
+                    .last()
+                    .unwrap_or(&entry.path)
+            };
             table.add_row(vec![
                 Cell::new(&entry.file_type.to_string())
                     .set_alignment(comfy_table::CellAlignment::Center),
                 Cell::new(entry.permissions.replace('-', "")),
                 Cell::new(&entry.size_display),
-                Cell::new(entry.path.split('/').last().unwrap_or(&entry.path)),
+                Cell::new(file_path),
             ]);
         }
 

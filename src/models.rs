@@ -43,8 +43,12 @@ pub struct Cli {
     /// 搜索文件名或目录名
     #[arg(long = "name", value_name = "PATTERN")]
     pub name: Option<String>,
-}
 
+    /// 显示全部路径
+    #[arg(short = 'p', long = "full-path", help = "显示全部路径")]
+    pub full_path: bool,
+}
+#[derive(Debug)]
 pub struct FileEntry {
     pub file_type: char,
     pub permissions: String,

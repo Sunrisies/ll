@@ -12,7 +12,6 @@ fn main() {
     let start_time = std::time::Instant::now();
     let args = Cli::parse();
     let path = Path::new(&args.file);
-
     if path.is_dir() {
         list_directory(path, &args);
     } else {
