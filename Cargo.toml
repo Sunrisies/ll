@@ -6,12 +6,23 @@ authors = ["朝阳 3266420686@qq.com"]
 description = "高性能目录列表工具"
 license = "MIT"
 repository = "https://github.com/Sunrisies/ll"
+
+[lib]
+name = "ll"
+path = "src/lib.rs"
 [dependencies]
 chrono = "0.4.40"
 clap = { version = "4.5.37", features = ["derive"] }
 comfy-table = "7.1.4"
+criterion = "0.5.1"
 indicatif = "0.17.11"
 rayon = "1.10.0"
+walkdir = "2.5.0"
+winapi = { version = "0.3.9", features = [
+    "processthreadsapi",
+    "securitybaseapi",
+    "shellapi",
+] }
 
 
 [profile.release]
@@ -20,3 +31,11 @@ strip = true
 panic = "abort"
 codegen-units = 1
 opt-level = "z"   # 优化大小而非速度
+debug = true      # 保留调试信息以便分析
+
+[[bench]]
+name = "my_benchmark"
+harness = false
+
+[dev-dependencies]
+ll = { path = "." }

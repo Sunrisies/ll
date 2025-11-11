@@ -6,6 +6,7 @@ use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
+
 pub fn calculate_dir_size(
     path: &Path,
     human_readable: bool,
@@ -13,38 +14,65 @@ pub fn calculate_dir_size(
     parallel: bool,
 ) -> (u64, String) {
     fn inner_calculate(p: &Path, pb: &ProgressBar, parallel: bool) -> u64 {
-        fs::read_dir(p)
-            .map(|entries| {
-                let base_iter = entries.filter_map(|e| {
-                    pb.tick();
-                    e.ok()
-                });
+        match fs::read_dir(p) {
+            Ok(entries) => {
+                let mut total_size = 0;
+                let entries: Vec<_> = entries
+                    .filter_map(|e| {
+                        pb.tick();
+                        match e {
+                            Ok(entry) => Some(entry),
+                            Err(e) => {
+                                eprintln!("无法读取目录项 {}: {}", p.display(), e);
+                                None
+                            }
+                        }
+                    })
+                    .collect();
+
                 if parallel {
-                    let processed_iter = base_iter.par_bridge();
-                    processed_iter.map(|e| process_entry(e, pb, parallel)).sum()
+                    // 使用并行处理
+                    total_size += entries
+                        .par_iter()
+                        .map(|e| process_entry(e, pb, parallel))
+                        .sum::<u64>();
                 } else {
-                    base_iter.map(|e| process_entry(e, pb, parallel)).sum()
+                    // 使用串行处理
+                    total_size += entries
+                        .iter()
+                        .map(|e| process_entry(e, pb, parallel))
+                        .sum::<u64>();
                 }
-                // 统一使用并行迭代器接口
-            })
-            .unwrap_or(0)
+
+                total_size
+            }
+            Err(e) => {
+                eprintln!("无法读取目录 {}: {}", p.display(), e);
+                0 // 返回0表示这个目录本身无法访问，但不影响父目录计算其他项
+            }
+        }
     }
 
-    // 新增辅助函数处理条目
-    fn process_entry(e: std::fs::DirEntry, pb: &ProgressBar, parallel: bool) -> u64 {
-        let md = match e.metadata() {
-            Ok(metadata) => metadata,
-            Err(_) => return 0,
-        };
-        if md.is_dir() {
-            inner_calculate(&e.path(), pb, parallel)
-        } else {
-            md.len()
+    // 修改process_entry函数以处理DirEntry引用
+    fn process_entry(e: &std::fs::DirEntry, pb: &ProgressBar, parallel: bool) -> u64 {
+        match e.metadata() {
+            Ok(metadata) => {
+                if metadata.is_dir() {
+                    inner_calculate(&e.path(), pb, parallel)
+                } else {
+                    metadata.len()
+                }
+            }
+            Err(e) => {
+                eprintln!("无法获取文件元数据 {}", e);
+                0 // 返回0表示这个文件无法访问，但不影响目录计算其他项
+            }
         }
     }
 
     main_pb.set_message(format!("计算 {}...", path.display()));
     let total = inner_calculate(path, main_pb, parallel);
+    println!("Total size: {}", total);
     main_pb.set_message("处理中...");
 
     let converted = if human_readable {

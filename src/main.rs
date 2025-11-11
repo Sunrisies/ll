@@ -1,11 +1,11 @@
 use clap::Parser;
 use std::path::Path;
 
-mod dir_listing;
+pub mod dir_listing;
 mod models;
+mod my_benchmark;
 mod utils;
-
-use dir_listing::list_directory;
+pub use dir_listing::list_directory;
 use models::Cli;
 
 fn main() {
