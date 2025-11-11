@@ -6,7 +6,6 @@ use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
-
 pub fn calculate_dir_size(
     path: &Path,
     human_readable: bool,
@@ -18,6 +17,7 @@ pub fn calculate_dir_size(
             Ok(entries) => {
                 let mut total_size = 0;
                 let entries: Vec<_> = entries
+                    .into_iter()
                     .filter_map(|e| {
                         pb.tick();
                         match e {
@@ -82,6 +82,7 @@ pub fn calculate_dir_size(
     };
     (total, converted)
 }
+
 pub fn list_directory(path: &Path, args: &Cli) {
     let entries = match fs::read_dir(path) {
         Ok(entries) => entries,
