@@ -13,68 +13,17 @@ pub fn calculate_dir_size(
     main_pb: &ProgressBar,
     parallel: bool,
 ) -> (u64, String) {
-    fn inner_calculate(p: &Path, pb: &ProgressBar, parallel: bool) -> u64 {
-        match fs::read_dir(p) {
-            Ok(entries) => {
-                let mut total_size = 0;
-                let entries: Vec<_> = entries
-                    .into_iter()
-                    .filter_map(|e| {
-                        pb.tick();
-                        match e {
-                            Ok(entry) => Some(entry),
-                            Err(e) => {
-                                eprintln!("无法读取目录项 {}: {}", p.display(), e);
-                                None
-                            }
-                        }
-                    })
-                    .collect();
-
-                if parallel {
-                    // 使用并行处理
-                    total_size += entries
-                        .par_iter()
-                        .map(|e| process_entry(e, pb, parallel))
-                        .sum::<u64>();
-                } else {
-                    // 使用串行处理
-                    total_size += entries
-                        .iter()
-                        .map(|e| process_entry(e, pb, parallel))
-                        .sum::<u64>();
-                }
-
-                total_size
-            }
-            Err(e) => {
-                eprintln!("无法读取目录 {}: {}", p.display(), e);
-                0 // 返回0表示这个目录本身无法访问，但不影响父目录计算其他项
-            }
-        }
-    }
-
-    // 修改process_entry函数以处理DirEntry引用
-    fn process_entry(e: &std::fs::DirEntry, pb: &ProgressBar, parallel: bool) -> u64 {
-        match e.metadata() {
-            Ok(metadata) => {
-                if metadata.is_dir() {
-                    inner_calculate(&e.path(), pb, parallel)
-                } else {
-                    metadata.len()
-                }
-            }
-            Err(e) => {
-                eprintln!("无法获取文件元数据 {}", e);
-                0 // 返回0表示这个文件无法访问，但不影响目录计算其他项
-            }
-        }
-    }
-
+    // ✅ 设置当前计算的路径
     main_pb.set_message(format!("计算 {}...", path.display()));
-    let total = inner_calculate(path, main_pb, parallel);
-    // println!("Total size: {}", total);
-    main_pb.set_message("处理中...");
+    // 关键：用 Arc 包装，实现线程安全共享
+    let pb_arc = Arc::new(main_pb.clone());
+
+    let total = if parallel {
+        // inner_calculate_parallel(path, &pb_arc, 0)
+        inner_calculate_dynamic(path, &pb_arc, 0)
+    } else {
+        inner_calculate_serial(path, &pb_arc)
+    };
 
     let converted = if human_readable {
         human_readable_size(total)
@@ -82,6 +31,123 @@ pub fn calculate_dir_size(
         total.to_string()
     };
     (total, converted)
+}
+// 动态并行：根据目录复杂度决定是否并行
+fn inner_calculate_dynamic(path: &Path, pb: &Arc<ProgressBar>, depth: usize) -> u64 {
+    if depth > 0 && depth <= 2 {
+        // 只显示前2层，避免消息刷新太频繁
+        pb.set_message(format!("计算 {}...", path.display()));
+    }
+    match fs::read_dir(path) {
+        Ok(entries) => {
+            let entries_vec: Vec<_> = entries.collect();
+            //根据深度决定tick频率
+            let tick_freq = if depth == 0 {
+                50
+            } else if depth < 3 {
+                100
+            } else {
+                200
+            };
+            // 收集条目并统计信息
+            let items: Vec<_> = entries_vec
+                .into_iter()
+                .enumerate()
+                .filter_map(|(i, e)| {
+                    // 批量tick
+                    if i % tick_freq == 0 {
+                        pb.tick();
+                    }
+
+                    let entry = e.ok()?;
+                    let metadata = entry.metadata().ok()?;
+                    Some((entry.path(), metadata))
+                })
+                .collect();
+
+            // 动态决策：是否使用并行
+            let use_parallel = should_use_parallel(&items, depth);
+
+            if use_parallel {
+                // 并行处理
+                items
+                    .into_par_iter()
+                    .map(|(item_path, metadata)| {
+                        if metadata.is_dir() {
+                            inner_calculate_dynamic(&item_path, pb, depth + 1)
+                        } else {
+                            metadata.len()
+                        }
+                    })
+                    .sum()
+            } else {
+                // 串行处理
+                let mut total = 0;
+                for (item_path, metadata) in items {
+                    if metadata.is_dir() {
+                        total += inner_calculate_dynamic(&item_path, pb, depth + 1);
+                    } else {
+                        total += metadata.len();
+                    }
+                }
+                total
+            }
+        }
+        Err(e) => {
+            eprintln!("无法读取目录 {}: {}", path.display(), e);
+            0
+        }
+    }
+}
+// 智能决策：是否使用并行
+fn should_use_parallel(items: &[(PathBuf, std::fs::Metadata)], depth: usize) -> bool {
+    // 如果深度太大，直接返回false
+    if depth > 10 {
+        return false;
+    }
+
+    // 统计子目录数量
+    let dir_count = items.iter().filter(|(_, m)| m.is_dir()).count();
+    // 策略1：根据子目录数量决定
+    //子目录越多，越应该并行
+    if dir_count > 8 {
+        return true;
+    }
+
+    // 策略2：根据总项数决定
+    // 项数越多，越应该并行
+    if items.len() > 100 {
+        return true;
+    }
+
+    // 策略3：根据深度调整
+    // 深度越大，越应该谨慎并行
+    if depth > 5 {
+        return dir_count > 4; // 只有子目录多才并行
+    }
+
+    // 策略4：混合模式
+    // 浅层大胆并行，深层保守
+    depth < 3 || (depth < 6 && dir_count > 2)
+}
+
+// 串行版本：用于深度过大或小目录
+fn inner_calculate_serial(path: &Path, pb: &Arc<ProgressBar>) -> u64 {
+    pb.set_message(format!("计算 {}...", path.display()));
+    let mut total = 0;
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            pb.tick();
+            if let Ok(metadata) = entry.metadata() {
+                if metadata.is_dir() {
+                    total += inner_calculate_serial(&entry.path(), pb);
+                } else {
+                    total += metadata.len();
+                }
+            }
+        }
+    }
+    total
 }
 
 pub fn list_directory(path: &Path, args: &Cli) {
