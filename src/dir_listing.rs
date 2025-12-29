@@ -5,6 +5,7 @@ use indicatif::ProgressBar;
 use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
+use std::sync::Arc;
 
 pub fn calculate_dir_size(
     path: &Path,
@@ -72,7 +73,7 @@ pub fn calculate_dir_size(
 
     main_pb.set_message(format!("计算 {}...", path.display()));
     let total = inner_calculate(path, main_pb, parallel);
-    println!("Total size: {}", total);
+    // println!("Total size: {}", total);
     main_pb.set_message("处理中...");
 
     let converted = if human_readable {
@@ -106,7 +107,7 @@ pub fn list_directory(path: &Path, args: &Cli) {
     if args.long_format {
         let process_pb = progress_bar_init(None).unwrap(); // 修改为不传入具体数值
         process_pb.set_message("处理中..."); // 设置固定提示信息
-
+        let pb_arc = Arc::new(&process_pb);
         for (_i, file) in files.iter().enumerate() {
             process_pb.tick();
             let file_path = path.join(&file);
@@ -122,12 +123,12 @@ pub fn list_directory(path: &Path, args: &Cli) {
                     // 如果是目录，是否跟要搜索的名称匹配
                     if let Some(name) = &args.name {
                         if !file.contains(name) {
-                            calculate_dir_size1(
+                            // 使用并行版本
+                            calculate_dir_size_parallel(
                                 file_path,
                                 args.human_readable,
-                                &process_pb,
-                                args.parallel,
-                                &name,
+                                Arc::clone(&pb_arc), // 克隆 Arc
+                                name,
                                 &mut entries,
                             );
                             continue;
@@ -168,11 +169,7 @@ pub fn list_directory(path: &Path, args: &Cli) {
                 size_display,
                 size_raw,
                 path: match file_path.canonicalize() {
-                    Ok(canonical_path) => {
-                        let path_str = canonical_path.to_string_lossy().into_owned();
-                        let path_str = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
-                        path_str.to_string()
-                    }
+                    Ok(canonical_path) => get_canonical_path(&canonical_path),
                     Err(_e) => {
                         // eprintln!("获取绝对路径失败: {}", e);
                         file_path.to_string_lossy().into_owned()
@@ -237,71 +234,80 @@ pub fn list_directory(path: &Path, args: &Cli) {
     scan_pb.finish_and_clear(); // 完成后清理进度条
 }
 
-// 需要重写一个函数，是实现传入一个目录，传入一个名称，返回这个目录下面的对应名称文件大小
-fn calculate_dir_size1(
+// 搜索文件
+fn calculate_dir_size_parallel(
     file_path: PathBuf,
     human_readable: bool,
-    pb: &ProgressBar,
-    main_pb: bool,
+    pb: Arc<&ProgressBar>, // 改为 Arc
     name: &str,
     entries: &mut Vec<FileEntry>,
 ) {
-    let sub_path_str = file_path.display().to_string();
-    let sub_path = Path::new(&sub_path_str);
-    // 怎么进入到这个目录下面
-    let sub_entries = match fs::read_dir(sub_path) {
+    let sub_entries = match fs::read_dir(&file_path) {
         Ok(entries) => entries,
         Err(e) => {
-            eprintln!("ls: cannot access '{}': {}", sub_path.display(), e);
+            eprintln!("ls: cannot access '{}': {}", file_path.display(), e);
             return;
         }
     };
-    for entry in sub_entries.flatten() {
-        let file_name = entry.file_name().to_string_lossy().to_string();
-        let metadata = match entry.metadata() {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("ls: cannot access '{}': {}", sub_path.display(), e);
-                continue;
+
+    // 收集所有需要处理的目录
+    let dirs_to_process: Vec<_> = sub_entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                return None;
             }
-        };
-        if metadata.is_dir() {
-            let file_path = sub_path.join(&file_name);
-            // 如果是目录，是否跟要搜索的名称匹配
-            if !file_name.contains(name) {
-                calculate_dir_size1(file_path, human_readable, pb, main_pb, &name, entries);
-                continue; // 如果不匹配则跳过
-            } else {
-                let (raw, converted) = calculate_dir_size(&file_path, human_readable, pb, main_pb);
-                entries.push(FileEntry {
-                    file_type: if metadata.is_dir() { 'd' } else { '-' },
-                    permissions: format!(
-                        "{}-{}-{}",
-                        if metadata.permissions().readonly() {
-                            "r"
-                        } else {
-                            " "
-                        },
-                        "w",
-                        "x"
-                    ),
+            let metadata = e.metadata().ok()?;
+            if !metadata.is_dir() {
+                return None;
+            }
+            Some((e.path(), name))
+        })
+        .collect();
+
+    // 并行处理每个子目录
+    let results: Vec<Vec<FileEntry>> = dirs_to_process
+        .into_par_iter()
+        .map(|(sub_path, sub_name)| {
+            pb.tick();
+            let mut local_entries = Vec::new();
+
+            if sub_name.contains(name) {
+                // 匹配：计算大小
+                let (raw, converted) = calculate_dir_size(&sub_path, human_readable, &pb, true);
+                local_entries.push(FileEntry {
+                    file_type: 'd',
+                    permissions: "rwx".to_string(),
                     size_display: converted,
                     size_raw: raw,
-                    path: match file_path.canonicalize() {
-                        Ok(canonical_path) => {
-                            let path_str = canonical_path.to_string_lossy().into_owned();
-                            let path_str = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
-                            path_str.to_string()
-                        }
-                        Err(e) => {
-                            eprintln!("获取绝对路径失败: {}", e);
-                            "".to_string()
-                        }
-                    },
+                    path: get_canonical_path(&sub_path),
                 });
+            } else {
+                calculate_dir_size_parallel(
+                    sub_path,
+                    human_readable,
+                    Arc::clone(&pb),
+                    name,
+                    &mut local_entries,
+                );
             }
-        } else {
-            continue;
+            local_entries
+        })
+        .collect();
+
+    // 收集所有结果到主entries
+    for result in results {
+        entries.extend(result);
+    }
+}
+
+fn get_canonical_path(path: &Path) -> String {
+    match path.canonicalize() {
+        Ok(canonical) => {
+            let s = canonical.to_string_lossy().into_owned();
+            s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
         }
+        Err(_) => path.to_string_lossy().into_owned(),
     }
 }

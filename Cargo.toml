@@ -11,13 +11,18 @@ repository = "https://github.com/Sunrisies/ll"
 name = "ll"
 path = "src/lib.rs"
 [dependencies]
+anyhow = "1.0.100"
 chrono = "0.4.40"
 clap = { version = "4.5.37", features = ["derive"] }
 comfy-table = "7.1.4"
 criterion = "0.5.1"
+crossbeam-channel = "0.5.15"
 crossbeam-deque = "0.8.6"
 indicatif = "0.17.11"
 jwalk = "0.8.1"
+log = "0.4.29"
+log4rs = "1.4.0"
+nu-ansi-term = "0.50.3"
 num_cpus = "1.17.0"
 rayon = "1.10.0"
 walkdir = "2.5.0"
@@ -33,8 +38,8 @@ lto = true
 strip = true
 panic = "abort"
 codegen-units = 1
-opt-level = "z"   # 优化大小而非速度
-debug = true      # 保留调试信息以便分析
+opt-level = 3     # 以运行速度为优先
+debug = false     # 关闭调试信息以获得更小的二进制与更快启动
 
 [[bench]]
 name = "my_benchmark"
