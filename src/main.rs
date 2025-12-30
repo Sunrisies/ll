@@ -4,7 +4,7 @@ use std::path::Path;
 
 mod dir_listing;
 mod models;
-mod my_benchmark;
+// mod my_benchmark;
 mod utils;
 use dir_listing::list_directory;
 use models::Cli;

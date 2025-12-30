@@ -6,7 +6,7 @@ use std::path::Path;
 
 fn bench_directory_listing(c: &mut Criterion) {
     let test_dirs = vec![
-        ("small_dir", "d:/project/github/user/ll/src"),
+        ("small_dir", "E:/"),
         // ("medium_dir", "d:/project/project"),
         // ("large_dir", "d:/project"),
         // ("system_dir", "c:/"),
