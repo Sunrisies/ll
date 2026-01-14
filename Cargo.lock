@@ -601,8 +601,6 @@ dependencies = [
  "clap",
  "comfy-table",
  "criterion",
- "crossbeam-channel",
- "crossbeam-deque",
  "indicatif",
  "jwalk",
  "ll",
@@ -611,7 +609,6 @@ dependencies = [
  "nu-ansi-term",
  "num_cpus",
  "rayon",
- "walkdir",
  "winapi",
 ]
 
