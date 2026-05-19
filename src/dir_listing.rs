@@ -7,24 +7,52 @@ use std::fs;
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 use std::sync::Arc;
 
+/// 递归计算目录总大小（无进度条内部开销）
+fn calc_dir_size_inner(path: &Path, parallel: bool, depth: usize) -> u64 {
+    let Ok(entries) = fs::read_dir(path) else { return 0 };
+
+    let items: Vec<_> = entries
+        .flatten()
+        .filter_map(|e| {
+            let meta = e.metadata().ok()?;
+            Some((e.path(), meta))
+        })
+        .collect();
+
+    let use_parallel = parallel && depth < 8 && items.len() > 4;
+
+    if use_parallel {
+        items
+            .into_par_iter()
+            .map(|(p, meta)| {
+                if meta.is_dir() {
+                    calc_dir_size_inner(&p, true, depth + 1)
+                } else {
+                    meta.len()
+                }
+            })
+            .sum()
+    } else {
+        let mut total = 0u64;
+        for (p, meta) in &items {
+            if meta.is_dir() {
+                total += calc_dir_size_inner(p, parallel && depth < 10, depth + 1);
+            } else {
+                total += meta.len();
+            }
+        }
+        total
+    }
+}
+
 pub fn calculate_dir_size(
     path: &Path,
     human_readable: bool,
     main_pb: &ProgressBar,
     parallel: bool,
 ) -> (u64, String) {
-    // ✅ 设置当前计算的路径
     main_pb.set_message(format!("计算 {}...", path.display()));
-    // 关键：用 Arc 包装，实现线程安全共享
-    let pb_arc = Arc::new(main_pb.clone());
-
-    let total = if parallel {
-        // inner_calculate_parallel(path, &pb_arc, 0)
-        inner_calculate_dynamic(path, &pb_arc, 0)
-    } else {
-        inner_calculate_serial(path, &pb_arc)
-    };
-
+    let total = calc_dir_size_inner(path, parallel, 0);
     let converted = if human_readable {
         human_readable_size(total)
     } else {
@@ -32,122 +60,44 @@ pub fn calculate_dir_size(
     };
     (total, converted)
 }
-// 动态并行：根据目录复杂度决定是否并行
-fn inner_calculate_dynamic(path: &Path, pb: &Arc<ProgressBar>, depth: usize) -> u64 {
-    if depth > 0 && depth <= 2 {
-        // 只显示前2层，避免消息刷新太频繁
-        pb.set_message(format!("计算 {}...", path.display()));
+
+/// 根据元数据直接构建 FileEntry（目录会递归算大小）
+fn build_file_entry_from_meta(
+    name: &str,
+    meta: &fs::Metadata,
+    base_path: &Path,
+    human_readable: bool,
+    parallel: bool,
+) -> FileEntry {
+    let file_path = base_path.join(name);
+    let (size_display, size_raw) = if meta.is_dir() {
+        let total = calc_dir_size_inner(&file_path, parallel, 0);
+        let converted = if human_readable {
+            human_readable_size(total)
+        } else {
+            total.to_string()
+        };
+        (converted, total)
+    } else if human_readable {
+        (human_readable_size(meta.len()), meta.len())
+    } else {
+        (meta.len().to_string(), meta.len())
+    };
+    FileEntry {
+        file_type: if meta.is_dir() { 'd' } else { '-' },
+        permissions: format!(
+            "{}-{}-{}",
+            if meta.permissions().readonly() { "r" } else { " " },
+            "w",
+            "x"
+        ),
+        size_display,
+        size_raw,
+        path: match file_path.canonicalize() {
+            Ok(canonical_path) => get_canonical_path(&canonical_path),
+            Err(_e) => file_path.to_string_lossy().into_owned(),
+        },
     }
-    match fs::read_dir(path) {
-        Ok(entries) => {
-            let entries_vec: Vec<_> = entries.collect();
-            //根据深度决定tick频率
-            let tick_freq = if depth == 0 {
-                50
-            } else if depth < 3 {
-                100
-            } else {
-                200
-            };
-            // 收集条目并统计信息
-            let items: Vec<_> = entries_vec
-                .into_iter()
-                .enumerate()
-                .filter_map(|(i, e)| {
-                    // 批量tick
-                    if i % tick_freq == 0 {
-                        pb.tick();
-                    }
-
-                    let entry = e.ok()?;
-                    let metadata = entry.metadata().ok()?;
-                    Some((entry.path(), metadata))
-                })
-                .collect();
-
-            // 动态决策：是否使用并行
-            let use_parallel = should_use_parallel(&items, depth);
-
-            if use_parallel {
-                // 并行处理
-                items
-                    .into_par_iter()
-                    .map(|(item_path, metadata)| {
-                        if metadata.is_dir() {
-                            inner_calculate_dynamic(&item_path, pb, depth + 1)
-                        } else {
-                            metadata.len()
-                        }
-                    })
-                    .sum()
-            } else {
-                // 串行处理
-                let mut total = 0;
-                for (item_path, metadata) in items {
-                    if metadata.is_dir() {
-                        total += inner_calculate_dynamic(&item_path, pb, depth + 1);
-                    } else {
-                        total += metadata.len();
-                    }
-                }
-                total
-            }
-        }
-        Err(e) => {
-            eprintln!("无法读取目录 {}: {}", path.display(), e);
-            0
-        }
-    }
-}
-// 智能决策：是否使用并行
-fn should_use_parallel(items: &[(PathBuf, std::fs::Metadata)], depth: usize) -> bool {
-    // 如果深度太大，直接返回false
-    if depth > 10 {
-        return false;
-    }
-
-    // 统计子目录数量
-    let dir_count = items.iter().filter(|(_, m)| m.is_dir()).count();
-    // 策略1：根据子目录数量决定
-    //子目录越多，越应该并行
-    if dir_count > 8 {
-        return true;
-    }
-
-    // 策略2：根据总项数决定
-    // 项数越多，越应该并行
-    if items.len() > 100 {
-        return true;
-    }
-
-    // 策略3：根据深度调整
-    // 深度越大，越应该谨慎并行
-    if depth > 5 {
-        return dir_count > 4; // 只有子目录多才并行
-    }
-
-    // 策略4：混合模式
-    // 浅层大胆并行，深层保守
-    depth < 3 || (depth < 6 && dir_count > 2)
-}
-
-// 串行版本：用于深度过大或小目录
-fn inner_calculate_serial(path: &Path, pb: &Arc<ProgressBar>) -> u64 {
-    pb.set_message(format!("计算 {}...", path.display()));
-    let mut total = 0;
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() {
-            pb.tick();
-            if let Ok(metadata) = entry.metadata() {
-                if metadata.is_dir() {
-                    total += inner_calculate_serial(&entry.path(), pb);
-                } else {
-                    total += metadata.len();
-                }
-            }
-        }
-    }
-    total
 }
 
 pub fn list_directory(path: &Path, args: &Cli) {
@@ -234,60 +184,49 @@ pub fn list_directory(path: &Path, args: &Cli) {
 
     let scan_pb = progress_bar_init(None).unwrap();
 
-    let mut entries = Vec::new(); // 新增存储条目信息的结构
-
     if args.long_format {
-        let process_pb = progress_bar_init(None).unwrap(); // 修改为不传入具体数值
-        process_pb.set_message("处理中..."); // 设置固定提示信息
+        let process_pb = progress_bar_init(None).unwrap();
+        process_pb.set_message("扫描元数据...");
 
-        for (_i, file) in files.iter().enumerate() {
+        // Phase 1: 快速收集所有条目的元数据（stat 操作，轻量）
+        let mut meta_list: Vec<(String, fs::Metadata)> = Vec::new();
+        for file in &files {
             process_pb.tick();
-            let file_path = path.join(&file);
-            let metadata = match file_path.metadata() {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("ls: cannot access '{}': {}", file_path.display(), e);
-                    continue;
-                }
-            };
-            let (size_display, size_raw) = if metadata.is_dir() {
-                let (raw, converted) =
-                    calculate_dir_size(&file_path, args.human_readable, &process_pb, args.parallel);
-                (converted, raw)
-            } else if args.human_readable {
-                (human_readable_size(metadata.len()), metadata.len())
-            } else {
-                (metadata.len().to_string(), metadata.len())
-            };
-            entries.push(FileEntry {
-                file_type: if metadata.is_dir() { 'd' } else { '-' },
-                permissions: format!(
-                    "{}-{}-{}",
-                    if metadata.permissions().readonly() {
-                        "r"
-                    } else {
-                        " "
-                    },
-                    "w",
-                    "x"
-                ),
-                size_display,
-                size_raw,
-                path: match file_path.canonicalize() {
-                    Ok(canonical_path) => get_canonical_path(&canonical_path),
-                    Err(_e) => {
-                        // eprintln!("获取绝对路径失败: {}", e);
-                        file_path.to_string_lossy().into_owned()
-                    }
-                },
-            });
+            let file_path = path.join(file);
+            match file_path.metadata() {
+                Ok(m) => meta_list.push((file.clone(), m)),
+                Err(e) => eprintln!("ls: cannot access '{}': {}", file_path.display(), e),
+            }
         }
+
+        // Phase 2: 构建 FileEntry（目录算大小可并行）
+        process_pb.set_message("计算大小...");
+        let pb_arc = Arc::new(process_pb.clone());
+        let entries: Vec<FileEntry> = if args.parallel && meta_list.len() > 1 {
+            meta_list
+                .par_iter()
+                .map(|(name, meta)| {
+                    pb_arc.tick();
+                    build_file_entry_from_meta(name, meta, path, args.human_readable, true)
+                })
+                .collect()
+        } else {
+            meta_list
+                .iter()
+                .map(|(name, meta)| {
+                    process_pb.tick();
+                    build_file_entry_from_meta(name, meta, path, args.human_readable, args.parallel)
+                })
+                .collect()
+        };
 
         process_pb.finish_and_clear();
-        let mut sum_size = 0;
+
+        let mut sum_size = 0u64;
         for entry in &entries {
-            sum_size += entry.size_raw; // 使用第4个字段的原始大小
+            sum_size += entry.size_raw;
         }
+        let mut entries = entries;
         if args.sort {
             entries.sort_by(|a, b| a.size_raw.cmp(&b.size_raw));
         }
@@ -305,7 +244,7 @@ pub fn list_directory(path: &Path, args: &Cli) {
             .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
 
         for entry in entries.iter() {
-            let file_path = if args.full_path {
+            let display_path = if args.full_path {
                 &entry.path
             } else {
                 entry
@@ -319,7 +258,7 @@ pub fn list_directory(path: &Path, args: &Cli) {
                     .set_alignment(comfy_table::CellAlignment::Center),
                 Cell::new(entry.permissions.replace('-', "")),
                 Cell::new(&entry.size_display),
-                Cell::new(file_path),
+                Cell::new(display_path),
             ]);
         }
 
