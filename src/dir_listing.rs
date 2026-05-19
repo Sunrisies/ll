@@ -166,6 +166,72 @@ pub fn list_directory(path: &Path, args: &Cli) {
     }
 
     files.sort();
+
+    // --all 控制是否显示隐藏文件
+    if !args.all {
+        files.retain(|f| !f.starts_with('.'));
+    }
+
+    // --name: 递归搜索匹配名称的目录（类似 npkill）
+    if let Some(pattern) = &args.name {
+        let pb = progress_bar_init(None).unwrap();
+        pb.set_message("搜索中...");
+
+        let mut name_results: Vec<FileEntry> = Vec::new();
+        search_matching_dirs(
+            path,
+            pattern,
+            args.human_readable,
+            &pb,
+            args.parallel,
+            args.all,
+            &mut name_results,
+        );
+        pb.finish_and_clear();
+
+        if name_results.is_empty() {
+            println!("未找到包含 '{}' 的目录", pattern);
+            return;
+        }
+
+        if args.sort {
+            name_results.sort_by(|a, b| a.size_raw.cmp(&b.size_raw));
+        }
+
+        if args.long_format {
+            let mut table = Table::new();
+            table
+                .set_content_arrangement(ContentArrangement::Dynamic)
+                .set_header(vec![
+                    Cell::new("类型").add_attribute(comfy_table::Attribute::Bold),
+                    Cell::new("大小").add_attribute(comfy_table::Attribute::Bold),
+                    Cell::new("路径").add_attribute(comfy_table::Attribute::Bold),
+                ])
+                .load_preset(comfy_table::presets::UTF8_FULL)
+                .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+
+            let mut sum_size = 0;
+            for entry in &name_results {
+                sum_size += entry.size_raw;
+                table.add_row(vec![
+                    Cell::new("d").set_alignment(comfy_table::CellAlignment::Center),
+                    Cell::new(&entry.size_display),
+                    Cell::new(&entry.path),
+                ]);
+            }
+
+            println!("{}", table);
+            println!("┌{:─^43}┐", "");
+            println!("│ 匹配目录: {:4} │ 总大小: {:10} │", name_results.len(), human_readable_size(sum_size));
+            println!("└{:─^43}┘", "");
+        } else {
+            for entry in &name_results {
+                println!("{}", entry.path);
+            }
+        }
+        return;
+    }
+
     let scan_pb = progress_bar_init(None).unwrap();
 
     let mut entries = Vec::new(); // 新增存储条目信息的结构
@@ -173,37 +239,10 @@ pub fn list_directory(path: &Path, args: &Cli) {
     if args.long_format {
         let process_pb = progress_bar_init(None).unwrap(); // 修改为不传入具体数值
         process_pb.set_message("处理中..."); // 设置固定提示信息
-        let pb_arc = Arc::new(&process_pb);
+
         for (_i, file) in files.iter().enumerate() {
             process_pb.tick();
             let file_path = path.join(&file);
-            if args.name.is_some() {
-                let metadata = match file_path.metadata() {
-                    Ok(m) => m,
-                    Err(e) => {
-                        eprintln!("ls: cannot access '{}': {}", file_path.display(), e);
-                        continue;
-                    }
-                };
-                if metadata.is_dir() {
-                    // 如果是目录，是否跟要搜索的名称匹配
-                    if let Some(name) = &args.name {
-                        if !file.contains(name) {
-                            // 使用并行版本
-                            calculate_dir_size_parallel(
-                                file_path,
-                                args.human_readable,
-                                Arc::clone(&pb_arc), // 克隆 Arc
-                                name,
-                                &mut entries,
-                            );
-                            continue;
-                        }
-                    }
-                } else {
-                    continue;
-                }
-            }
             let metadata = match file_path.metadata() {
                 Ok(m) => m,
                 Err(e) => {
@@ -300,71 +339,168 @@ pub fn list_directory(path: &Path, args: &Cli) {
     scan_pb.finish_and_clear(); // 完成后清理进度条
 }
 
-// 搜索文件
-fn calculate_dir_size_parallel(
-    file_path: PathBuf,
-    human_readable: bool,
-    pb: Arc<&ProgressBar>, // 改为 Arc
-    name: &str,
-    entries: &mut Vec<FileEntry>,
-) {
-    let sub_entries = match fs::read_dir(&file_path) {
-        Ok(entries) => entries,
-        Err(e) => {
-            eprintln!("ls: cannot access '{}': {}", file_path.display(), e);
-            return;
-        }
+/// 收集目录下的所有可见子目录
+fn collect_subdirs(path: &Path, show_all: bool) -> Vec<(PathBuf, String)> {
+    let entries = match fs::read_dir(path) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
     };
-
-    // 收集所有需要处理的目录
-    let dirs_to_process: Vec<_> = sub_entries
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') {
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !show_all && name.starts_with('.') {
                 return None;
             }
-            let metadata = e.metadata().ok()?;
+            let metadata = entry.metadata().ok()?;
             if !metadata.is_dir() {
                 return None;
             }
-            Some((e.path(), name))
+            Some((entry.path(), name))
         })
-        .collect();
+        .collect()
+}
 
-    // 并行处理每个子目录
-    let results: Vec<Vec<FileEntry>> = dirs_to_process
-        .into_par_iter()
-        .map(|(sub_path, sub_name)| {
-            pb.tick();
-            let mut local_entries = Vec::new();
+fn search_matching_dirs(
+    path: &Path,
+    pattern: &str,
+    human_readable: bool,
+    pb: &ProgressBar,
+    parallel: bool,
+    show_all: bool,
+    results: &mut Vec<FileEntry>,
+) {
+    let dirs = collect_subdirs(path, show_all);
+    if dirs.is_empty() {
+        return;
+    }
 
-            if sub_name.contains(name) {
-                // 匹配：计算大小
-                let (raw, converted) = calculate_dir_size(&sub_path, human_readable, &pb, true);
-                local_entries.push(FileEntry {
-                    file_type: 'd',
-                    permissions: "rwx".to_string(),
-                    size_display: converted,
-                    size_raw: raw,
-                    path: get_canonical_path(&sub_path),
-                });
-            } else {
-                calculate_dir_size_parallel(
-                    sub_path,
-                    human_readable,
-                    Arc::clone(&pb),
-                    name,
-                    &mut local_entries,
-                );
-            }
-            local_entries
-        })
-        .collect();
+    // 分开匹配和不匹配的目录
+    let mut matching: Vec<(PathBuf, String)> = Vec::new();
+    let mut non_matching: Vec<PathBuf> = Vec::new();
+    for (p, name) in dirs {
+        if name.contains(pattern) {
+            matching.push((p, name));
+        } else {
+            non_matching.push(p);
+        }
+    }
 
-    // 收集所有结果到主entries
-    for result in results {
-        entries.extend(result);
+    // Phase 1: 匹配的目录 → 并行计算大小
+    if !matching.is_empty() {
+        let pb_arc = Arc::new(pb.clone());
+        let match_results: Vec<FileEntry> = if parallel && matching.len() > 1 {
+            matching
+                .par_iter()
+                .map(|(dir_path, _)| {
+                    pb_arc.tick();
+                    pb_arc.set_message(format!("找到: {}", dir_path.display()));
+                    let (raw, converted) =
+                        calculate_dir_size(dir_path, human_readable, &pb_arc, true);
+                    FileEntry {
+                        file_type: 'd',
+                        permissions: "rwx".to_string(),
+                        size_display: converted,
+                        size_raw: raw,
+                        path: get_canonical_path(dir_path),
+                    }
+                })
+                .collect()
+        } else {
+            matching
+                .iter()
+                .map(|(dir_path, _)| {
+                    pb.tick();
+                    pb.set_message(format!("找到: {}", dir_path.display()));
+                    let (raw, converted) =
+                        calculate_dir_size(dir_path, human_readable, pb, parallel);
+                    FileEntry {
+                        file_type: 'd',
+                        permissions: "rwx".to_string(),
+                        size_display: converted,
+                        size_raw: raw,
+                        path: get_canonical_path(dir_path),
+                    }
+                })
+                .collect()
+        };
+        results.extend(match_results);
+    }
+
+    // Phase 2: 不匹配的目录 → 递归搜索（并行）
+    if non_matching.is_empty() {
+        return;
+    }
+
+    if parallel && non_matching.len() > 1 {
+        let sub_results: Vec<Vec<FileEntry>> = non_matching
+            .par_iter()
+            .map(|dir_path| {
+                let mut local = Vec::new();
+                search_dirs_deep(dir_path, pattern, human_readable, show_all, &mut local);
+                local
+            })
+            .collect();
+        for r in sub_results {
+            results.extend(r);
+        }
+    } else {
+        for dir_path in &non_matching {
+            search_matching_dirs(dir_path, pattern, human_readable, pb, parallel, show_all, results);
+        }
+    }
+}
+
+/// 无进度条版搜索，专用于并行递归（每个线程独立跑，不抢 pb）
+fn search_dirs_deep(
+    path: &Path,
+    pattern: &str,
+    human_readable: bool,
+    show_all: bool,
+    results: &mut Vec<FileEntry>,
+) {
+    let dirs = collect_subdirs(path, show_all);
+    if dirs.is_empty() {
+        return;
+    }
+
+    // 本层匹配的 → 计算大小
+    let mut deeper: Vec<PathBuf> = Vec::new();
+    for (dir_path, name) in &dirs {
+        if name.contains(pattern) {
+            // 不用 pb，创建临时 spinner 给 calculate_dir_size 占位
+            let silent_pb = ProgressBar::new_spinner();
+            let (raw, converted) =
+                calculate_dir_size(dir_path, human_readable, &silent_pb, true);
+            results.push(FileEntry {
+                file_type: 'd',
+                permissions: "rwx".to_string(),
+                size_display: converted,
+                size_raw: raw,
+                path: get_canonical_path(dir_path),
+            });
+        } else {
+            deeper.push(dir_path.clone());
+        }
+    }
+
+    // 不匹配的 → 继续递归（并行）
+    if deeper.len() > 1 {
+        let sub: Vec<Vec<FileEntry>> = deeper
+            .par_iter()
+            .map(|p| {
+                let mut local = Vec::new();
+                search_dirs_deep(p, pattern, human_readable, show_all, &mut local);
+                local
+            })
+            .collect();
+        for r in sub {
+            results.extend(r);
+        }
+    } else {
+        for p in &deeper {
+            search_dirs_deep(p, pattern, human_readable, show_all, results);
+        }
     }
 }
 
